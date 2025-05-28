@@ -155,29 +155,28 @@
         // Load high score from memory
         let highScore = 0;
         
-        let gameState = {
+        const gameState = {
             score: 0,
+            highScore: 0,
             lives: 3,
             gameRunning: true,
             cannon: {
                 x: canvas.width / 2,
                 y: canvas.height - 30,
-                width: 40,
-                height: 20,
                 angle: 0,
-                speed: 3
+                speed: 5,
+                lastShot: 0,
+                shotCooldown: 200
             },
             enemies: [],
             lasers: [],
             keys: {
                 left: false,
                 right: false,
-                up: false,
-                down: false
+                space: false
             },
-            lastEnemySpawn: 0,
-            enemySpawnRate: 1500,
-            lastShot: 0,
+            lastSpawn: 0,
+            spawnRate: 1500, // ms between enemy spawns
             shotCooldown: 200,
             phase: {
                 current: 1,
@@ -185,7 +184,18 @@
                 duration: 30000, // 30 seconds per phase
                 lastPhaseChange: 0
             },
-            explosions: []
+            explosions: [],
+            // Add visual feedback for hit
+            hitEffect: {
+                active: false,
+                alpha: 0,
+                duration: 300, // ms
+                startTime: 0
+            },
+            // Add invulnerability after hit
+            invulnerable: false,
+            invulnerableDuration: 1500, // ms
+            invulnerableStart: 0
         };
         
         class Enemy {
@@ -428,7 +438,7 @@
                 gameState.phase.lastPhaseChange = now;
                 
                 const phaseSettings = getPhaseSettings(gameState.phase.current);
-                gameState.enemySpawnRate = phaseSettings.spawnRate;
+                gameState.spawnRate = phaseSettings.spawnRate;
                 
                 // Update phase display
                 phaseElement.textContent = `PHASE ${gameState.phase.current}: ${phaseSettings.name}`;
@@ -473,13 +483,13 @@
                 
                 // Auto-fire when aligned
                 const now = Date.now();
-                if (now - gameState.lastShot > gameState.shotCooldown) {
+                if (now - gameState.cannon.lastShot > gameState.cannon.shotCooldown) {
                     gameState.lasers.push(new Laser(
                         gameState.cannon.x,
                         gameState.cannon.y - 20,
                         0 // Always shoot straight up
                     ));
-                    gameState.lastShot = now;
+                    gameState.cannon.lastShot = now;
                 }
             } else {
                 // Default position - cannon points straight up
@@ -489,10 +499,10 @@
         
         function spawnEnemy() {
             const now = Date.now();
-            if (now - gameState.lastEnemySpawn > gameState.enemySpawnRate) {
+            if (now - gameState.lastSpawn > gameState.spawnRate) {
                 const phaseSettings = getPhaseSettings(gameState.phase.current);
                 gameState.enemies.push(new Enemy(phaseSettings.speedMultiplier));
-                gameState.lastEnemySpawn = now;
+                gameState.lastSpawn = now;
             }
         }
         
@@ -502,11 +512,14 @@
             // Update phase system
             updatePhase();
             
-            // Spawn enemies
-            spawnEnemy();
-            
-            // Update cannon
-            updateCannon();
+            // Don't spawn new enemies if player is invulnerable (just lost a life)
+            if (!gameState.invulnerable) {
+                // Spawn enemies
+                spawnEnemy();
+                
+                // Update cannon
+                updateCannon();
+            }
             
             // Update enemies
             for (let i = gameState.enemies.length - 1; i >= 0; i--) {
@@ -561,8 +574,7 @@
         
         function render() {
             // Clear canvas
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
             
             // Draw stars
             ctx.fillStyle = 'white';
@@ -572,12 +584,45 @@
                 ctx.fillRect(x, y, 1, 1);
             }
             
-            // Draw game objects
+            // Draw game elements
             drawCannon();
             
+            // Draw enemies
             gameState.enemies.forEach(enemy => enemy.draw());
+            
+            // Draw lasers
             gameState.lasers.forEach(laser => laser.draw());
+            
+            // Draw explosions
             gameState.explosions.forEach(explosion => explosion.draw());
+            
+            // Draw phase indicator
+            const phaseProgress = (Date.now() - gameState.phase.lastPhaseChange) / gameState.phase.duration;
+            if (phaseProgress < 1) {
+                ctx.fillStyle = 'rgba(255, 165, 0, 0.5)';
+                ctx.fillRect(10, 10, 200 * (1 - phaseProgress), 5);
+            }
+            
+            // Draw hit effect if active
+            if (gameState.hitEffect.active) {
+                const elapsed = Date.now() - gameState.hitEffect.startTime;
+                if (elapsed < gameState.hitEffect.duration) {
+                    // Fade out the red overlay
+                    const alpha = gameState.hitEffect.alpha * (1 - (elapsed / gameState.hitEffect.duration));
+                    ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                } else {
+                    gameState.hitEffect.active = false;
+                }
+            }
+            
+            // Update invulnerability state
+            if (gameState.invulnerable) {
+                const elapsed = Date.now() - gameState.invulnerableStart;
+                if (elapsed >= gameState.invulnerableDuration) {
+                    gameState.invulnerable = false;
+                }
+            }
         }
         
         function updateScore() {
@@ -591,8 +636,26 @@
         }
         
         function loseLife() {
+            if (gameState.invulnerable) return;
+            
             gameState.lives--;
             updateLives();
+            
+            // Trigger hit effect
+            gameState.hitEffect.active = true;
+            gameState.hitEffect.alpha = 0.7;
+            gameState.hitEffect.startTime = Date.now();
+            
+            // Make player temporarily invulnerable
+            gameState.invulnerable = true;
+            gameState.invulnerableStart = Date.now();
+            
+            // Create explosion at cannon
+            gameState.explosions.push(new Explosion(
+                gameState.cannon.x,
+                gameState.cannon.y - 20,
+                'life'
+            ));
             
             if (gameState.lives <= 0) {
                 gameOver();
@@ -622,9 +685,8 @@
             gameState.enemies = [];
             gameState.lasers = [];
             gameState.explosions = [];
-            gameState.enemySpawnRate = 2000; // Start with CALM phase settings
-            gameState.lastEnemySpawn = 0;
-            gameState.lastShot = 0;
+            gameState.spawnRate = 2000; // Start with CALM phase settings
+            gameState.lastSpawn = 0;
             gameState.cannon.x = canvas.width / 2;
             gameState.cannon.y = canvas.height - 30;
             
